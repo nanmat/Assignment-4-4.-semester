@@ -1,0 +1,224 @@
+---
+title: "Assignment 4 - Applying meta-analytic priors"
+author: "Riccardo Fusaroli"
+date: "3/16/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Assignment 4
+
+In this assignment we do the following:
+- we reproduce the meta-analysis of pitch SD from last semester in a Bayesian framework
+- we reproduce the pitch SD in schizophrenia analysis from last semester using both a conservative and a meta-analytic prior
+- we assess the difference in model quality and estimates using the two priors.
+
+The questions you need to answer are: What are the consequences of using a meta-analytic prior? Evaluate the models with conservative and meta-analytic priors. Discuss the effects on estimates. Discuss the effects on model quality. Discuss the role that meta-analytic priors should have in scientific practice. Should we systematically use them? Do they have drawbacks? Should we use them to complement more conservative approaches? How does the use of meta-analytic priors you suggest reflect the skeptical and cumulative nature of science?
+
+### Step by step suggestions
+
+Step 1: Reproduce the meta-analysis of pitch sd from previous studies of voice in schizophrenia
+- the data is available as Assignment4MetaData.xlsx
+- Effect size (cohen's d), sd and variance are already calculated (you're welcome!)
+- Since we're only interested in getting a meta-analytic effect size, let's take a shortcut and use bromance magic (brms): https://mvuorre.github.io/post/2016/2016-09-29-bayesian-meta-analysis/
+
+```{r setup, include=FALSE}
+setwd("~/OneDrive/4 Semester/Computational models/Assignment 4")
+metadata = read.csv("Assignment4MetaData-2.csv", sep = ";")
+library(brms)
+
+# Cohen's d is when we measure the means in SD. for study 1: S1 = (M1 - M2)/pooled SD
+# se(SdES) is the uncertainty in that particular study
+# ES is effect size
+# iter = how long to search for a solution before stopping
+# cores = how many analysis can it run at the same time
+# prior: isn't needed because the package find the optimal prior, a default setting
+metadata$MeanES = as.character(metadata$MeanES)
+metadata$MeanES = as.numeric(metadata$MeanES)
+
+metadata$SdES = as.character(metadata$SdES)
+metadata$SdES = as.numeric(metadata$SdES)
+
+modelMA <- brm(MeanES | se(SdES) ~ 1 + (1|StudyRef), 
+               data = metadata, iter = 2000, cores = 2, chains = 2)
+summary(modelMA)
+plotMA = plot(modelMA)
+# Estimates: sd(intercept) = 0.71, intercept = -0.55
+
+# install.packages("devtools")
+devtools::install_github("mvuorre/brmstools")
+
+library(brmstools)
+forest(modelMA,
+       show_data = TRUE,
+       av_name = "Effect size")
+
+```
+
+Step 2: Prepare the pitch SD data from last year
+- the data is available as Assignment4PitchData.csv (thanks Celine)
+- We do not know how to build random effects, yet. So we need to simplify the dataset to avoid interdependence between datapoint: How?
+- Also, let's standardize the data, so that they are compatible with our meta-analytic prior (Cohen's d is measured in SDs).
+```{r}
+pitchdata = read.csv("PitchDatav2.csv", sep = ";")
+library(dplyr)
+
+
+PitchData2=pitchdata %>% group_by(ID_unique) %>% dplyr::summarise(mean = mean(PitchMean), sd= mean(PitchSD), diagnosis = mean(diagnosis)) %>% mutate(scaleMean = scale(mean), scaleSD = scale(sd))
+
+```
+Step 3: Build a regression model predicting Pitch SD from Diagnosis.
+- how is the outcome distributed? (likelihood function)
+- how are the parameters of the likelihood distribution distributed? Which predictors should they be conditioned on?
+- use a skeptical/conservative prior for the effects of diagnosis. Remember you'll need to motivate it.
+- Describe and plot the estimates. Evaluate model quality
+
+```{r}
+library(rethinking)
+PitchData2 = as.data.frame(PitchData2)
+PImodel <- map(
+  alist(
+    scaleSD ~ dnorm(mu, sigma),
+    mu <- a + bD*diagnosis,
+    a ~ dnorm(0,2),
+    bD ~ dnorm(0,1),
+    sigma ~ dunif(0,5)
+  ),
+  data = PitchData2)
+precis(PImodel)
+plot(PitchData2$scaleSD ~ PitchData2$diagnosis)
+plot(PitchData2$scaleSD)
+abline(fit, col = "red")
+library(ggplot2)
+library(cowplot)
+plot1 <- dens(PitchData2$scaleSD[PitchData2$diagnosis == 1])
+plot2 <- dens(PitchData2$scaleSD[PitchData2$diagnosis == 0])
+### plot_grid(plot1, plot2, labels = "AUTO")
+
+PImodel2 <- map(
+  alist(
+    scaleSD ~ dnorm(mu, sigma),
+    mu <- a + bD*diagnosis,
+    a ~ dnorm(0,2),
+    bD ~ dnorm(0,0.1),
+    sigma ~ dunif(0,5)
+  ),
+  data = PitchData2)
+precis(PImodel2)
+
+
+
+#Plotting the values
+# Adjusting the scale, we want values from -10 to 15. "by" makes a datapoint for each 0.1. 
+Scalesd.seq <- seq( from=-10 , to=15 , by=0.1 )
+# Simulating 1000 data points for each point on the scale
+mu <- link(PImodel2, data=data.frame(PitchData2=Scalesd.seq) )
+#Calculate mean and HPDI for each data point
+mu.mean <- apply( mu , 2 , mean )
+mu.HPDI <- apply( mu , 2 , HPDI , prob=0.89 )
+
+#Simulate data points from the model in the sequence just made.
+sim.sd <- sim(PImodel2 , data=list(PitchData2=Scalesd.seq) )
+#Calculating HPDI for each data point in the model so we can investigate the model and make the plot
+sd.HPDI <- apply( sim.sd , 2 , HPDI , prob=0.89 )
+
+# plot raw data
+plot(scaleSD ~ diagnosis , PitchData2 , col=col.alpha(rangi2,0.5) )
+# draw MAP line, there is a point for each 0.1 so it becomes a line 
+lines( Scalesd.seq , mu.mean )
+# draw HPDI region for line, there are two HPDI values making a shade that shows the uncertainty of the line/model
+shade(mu.HPDI , Scalesd.seq)
+# draw HPDI region for simulated ADOS, the percentile interval. The uncertainty of the variables in the model
+shade(sd.HPDI , Scalesd.seq)
+
+
+
+
+
+#Quality check of the model
+mu <- link( PImodel2)
+# calculating mean and HPDI for each data point
+mu.mean <- apply( mu , 2 , mean )
+mu.HPDI <- apply( mu , 2 , HPDI )
+# simulate observations
+sd.sim <- sim( PImodel2 , n=1e4 )
+sd.HPDI <- apply( sd.sim , 2 , HPDI )
+
+PitchData2$diagnosis = as.factor(PitchData2$diagnosis)
+library(RColorBrewer)
+#all palette available from RColorBrewer
+display.brewer.all()
+#we will select the first 2 colors in the Set1 palette
+cols<-brewer.pal(n=2,name="Set1")
+#cols contain the names of four different colors
+#create a color vector corresponding to levels in the T1 variable in dat
+cols_diag<-cols[PitchData2$diagnosis]
+
+#plotting
+plot( mu.mean ~ PitchData2$scaleSD , col=cols_diag , pch=16, ylim=range(mu.HPDI) ,
+xlab="Observed sd" , ylab="Predicted sd" )
+abline( a=0 , b=1 , lty=2 )
+#for ( i in 1:nrow(PitchData2) )
+#lines( rep(PitchData2$scaleSD[i],2) , c(mu.HPDI[1,i],mu.HPDI[2,i]) , col=rangi2 )
+```
+
+Step 4: Now re-run the model with the meta-analytic prior
+- Describe and plot the estimates. Evaluate model quality
+
+```{r}
+PitchData2$diagnosis = as.numeric(PitchData2$diagnosis)
+PImodel3 <- map(
+  alist(
+    scaleSD ~ dnorm(mu, sigma),
+    mu <- a + bD*diagnosis,
+    a ~ dnorm(0,2),
+    bD ~ dnorm(-0.55,0.24),
+    sigma ~ dunif(0,5)
+  ),
+  data = PitchData2)
+precis(PImodel3)
+
+
+```
+Step 5: Compare the models
+- Plot priors and posteriors of the diagnosis effect in both models
+- Compare posteriors between the two models
+- Compare their relative distance from truth (WAIC)
+- Discuss how they compare and whether any of them is best.
+
+```{r}
+
+compare(PImodel,PImodel3)
+
+
+```
+Step 6: Prepare a nice write up of the analysis and answer the questions at the top.
+
+Optional step 7: how skeptical should a prior be?
+- Try different levels of skepticism and compare them using WAIC.
+
+Optional step 8: Include other predictors
+- Do age, gender and education improve the model?
+- Should they be main effects or interactions?
+
+Optional step 9: Bromance magic.
+- explore the bromance code below including random effects (by default with weakly informative priors)
+- learn how to change the prior
+- explore effects of trial, age, gender, including the appropriate random slopes
+- compare the models you created using WAIC and posterior predictive check (pp_check())
+
+
+```{r}
+
+brm_out <- brm(PitchSD ~ 1 + Diagnosis  +(1|ID_unique/Study), # Outcome as a function of the predictors as in lme4. 
+               data=Data, # Define the data
+               family=gaussian(), # Define the family. 
+               iter = 5000, warmup = 2000, cores = 4)
+summary(brm_out1)
+plot(brm_out1)
+
+```
+
